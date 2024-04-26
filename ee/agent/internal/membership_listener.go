@@ -68,16 +68,9 @@ type membershipListener struct {
 	clientInfo ClientInfo
 	restClient *rest.RESTClient
 
-	stacksModules InMemoryStacksModules
-	restMapper    meta.RESTMapper
-	orders        MembershipClient
-	wp            *pond.WorkerPool
-}
-
-func getExpectedModules() []string {
-	return []string{
-		"Stargate", "Wallets", "Ledger", "Payments", "Webhooks", "Auth", "Orchestration", "Search", "Gateway",
-	}
+	restMapper meta.RESTMapper
+	orders     MembershipClient
+	wp         *pond.WorkerPool
 }
 
 func (c *membershipListener) Start(ctx context.Context) {
@@ -93,17 +86,6 @@ func (c *membershipListener) Start(ctx context.Context) {
 				sharedlogging.FromContext(ctx).Infof("Got message from membership: %T", msg.GetMessage())
 				switch msg := msg.Message.(type) {
 				case *generated.Order_ExistingStack:
-					if msg.ExistingStack.Modules == nil || len(msg.ExistingStack.Modules) == 0 {
-						msg.ExistingStack.Modules = make([]*generated.Module, 0)
-						for _, module := range getExpectedModules() {
-							msg.ExistingStack.Modules = append(msg.ExistingStack.Modules, &generated.Module{
-								Name: module,
-							})
-						}
-					}
-					c.stacksModules[msg.ExistingStack.ClusterName] = collectionutils.Map(msg.ExistingStack.Modules, func(module *generated.Module) string {
-						return module.Name
-					})
 					c.syncExistingStack(ctx, msg.ExistingStack)
 				case *generated.Order_DeletedStack:
 					c.deleteStack(ctx, msg.DeletedStack)
@@ -171,9 +153,11 @@ func (c *membershipListener) syncModules(ctx context.Context, metadata map[strin
 			continue
 		}
 
-		if !slices.Contains(c.stacksModules[stack.GetName()], gvk.Kind) {
+		if !slices.Contains(collectionutils.Map(membershipStack.Modules, func(m *generated.Module) string {
+			return m.Name
+		}), gvk.Kind) {
 			if err := c.deleteModule(ctx, gvk, stack.GetName()); err != nil {
-				sharedlogging.FromContext(ctx).Errorf("Unable to get and delete module %s cluster side: %s", gvk.Kind, err)
+				sharedlogging.FromContext(ctx).Errorf("Unable to delete module %s cluster side: %s", gvk.Kind, err)
 			}
 			continue
 		}
@@ -458,13 +442,12 @@ func (c *membershipListener) createOrUpdateStackDependency(ctx context.Context, 
 }
 
 func NewMembershipListener(restClient *rest.RESTClient, clientInfo ClientInfo, mapper meta.RESTMapper,
-	orders MembershipClient, stacksModules InMemoryStacksModules) *membershipListener {
+	orders MembershipClient) *membershipListener {
 	return &membershipListener{
-		restClient:    restClient,
-		clientInfo:    clientInfo,
-		stacksModules: stacksModules,
-		restMapper:    mapper,
-		orders:        orders,
-		wp:            pond.New(5, 5),
+		restClient: restClient,
+		clientInfo: clientInfo,
+		restMapper: mapper,
+		orders:     orders,
+		wp:         pond.New(5, 5),
 	}
 }

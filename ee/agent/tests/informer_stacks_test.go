@@ -16,18 +16,16 @@ import (
 
 var _ = Describe("Stacks informer", func() {
 	var (
-		membershipClientMock  *internal.MembershipClientMock
-		inMemoryStacksModules map[string][]string
-		startListener         func()
+		membershipClientMock *internal.MembershipClientMock
+		startListener        func()
 	)
 	BeforeEach(func() {
-		inMemoryStacksModules = map[string][]string{}
 		membershipClientMock = internal.NewMembershipClientMock()
 		dynamicClient, err := dynamic.NewForConfig(restConfig)
 		Expect(err).To(Succeed())
 
 		factory := internal.NewDynamicSharedInformerFactory(dynamicClient)
-		Expect(internal.CreateStacksInformer(factory, logging.Testing(), membershipClientMock, inMemoryStacksModules)).To(Succeed())
+		Expect(internal.CreateStacksInformer(factory, logging.Testing(), membershipClientMock)).To(Succeed())
 		startListener = func() {
 			stopCh := make(chan struct{})
 			factory.Start(stopCh)
@@ -53,8 +51,6 @@ var _ = Describe("Stacks informer", func() {
 				Do(context.Background()).
 				Into(stack)).To(Succeed())
 
-			inMemoryStacksModules[stack.Name] = []string{}
-
 			startListener()
 
 			DeferCleanup(func() {
@@ -63,16 +59,57 @@ var _ = Describe("Stacks informer", func() {
 					Name(stack.Name).
 					Do(context.Background()).Error()).To(Succeed())
 			})
+
+			stack.Status.Ready = false
+			Expect(k8sClient.Put().
+				Resource("Stacks").
+				SubResource("status").
+				Name(stack.Name).
+				Body(stack).
+				Do(context.Background()).
+				Error()).To(Succeed())
 		})
-		It("Should be disabled and have sent a Status_Disabled", func() {
+		It("Should be disabled and have sent a Status_Changed", func() {
 			Eventually(func() []*generated.Message {
 				for _, message := range membershipClientMock.GetMessages() {
-					if message.GetStatusChanged() != nil && message.GetStatusChanged().Status == generated.StackStatus_Disabled {
-						return membershipClientMock.GetMessages()
+					if message.GetStatusChanged() != nil {
+						if _, ok := message.GetStatusChanged().GetStatuses().Fields["ready"]; ok {
+							isReady := message.GetStatusChanged().GetStatuses().Fields["ready"].GetBoolValue()
+							if !isReady {
+								return membershipClientMock.GetMessages()
+							}
+						}
 					}
 				}
 				return nil
 			}).ShouldNot(BeEmpty())
+		})
+		When("The stack is ready", func() {
+			BeforeEach(func() {
+				stack.Status.Ready = true
+				Expect(k8sClient.Put().
+					Resource("Stacks").
+					SubResource("status").
+					Name(stack.Name).
+					Body(stack).
+					Do(context.Background()).
+					Error()).To(Succeed())
+			})
+			It("Should have sent a Status_Changed", func() {
+				Eventually(func() []*generated.Message {
+					for _, message := range membershipClientMock.GetMessages() {
+						if message.GetStatusChanged() != nil {
+							if _, ok := message.GetStatusChanged().GetStatuses().Fields["ready"]; ok {
+								isReady := message.GetStatusChanged().GetStatuses().Fields["ready"].GetBoolValue()
+								if isReady {
+									return membershipClientMock.GetMessages()
+								}
+							}
+						}
+					}
+					return nil
+				}).ShouldNot(BeEmpty())
+			})
 		})
 		When("the stack is re-enabled", func() {
 			BeforeEach(func() {
@@ -83,12 +120,26 @@ var _ = Describe("Stacks informer", func() {
 					Body(stack).
 					Do(context.Background()).
 					Into(stack)).To(Succeed())
+
+				stack.Status.Ready = false
+				Expect(k8sClient.Put().
+					Resource("Stacks").
+					SubResource("status").
+					Name(stack.Name).
+					Body(stack).
+					Do(context.Background()).
+					Error()).To(Succeed())
 			})
-			It("should have sent a Status_Progressing", func() {
+			It("should have sent a Status_Changed", func() {
 				Eventually(func() []*generated.Message {
 					for _, message := range membershipClientMock.GetMessages() {
-						if message.GetStatusChanged() != nil && message.GetStatusChanged().Status == generated.StackStatus_Progressing {
-							return membershipClientMock.GetMessages()
+						if message.GetStatusChanged() != nil {
+							if _, ok := message.GetStatusChanged().GetStatuses().Fields["ready"]; ok {
+								isReady := message.GetStatusChanged().GetStatuses().Fields["ready"].GetBoolValue()
+								if !isReady {
+									return membershipClientMock.GetMessages()
+								}
+							}
 						}
 					}
 					return []*generated.Message{}
@@ -97,7 +148,6 @@ var _ = Describe("Stacks informer", func() {
 			When("the stack is reconcilled", func() {
 				BeforeEach(func() {
 					stack.Status.Ready = true
-					stack.Status.Modules = internal.GetExpectedModules(stack.Name, inMemoryStacksModules)
 					Expect(
 						k8sClient.Put().
 							Resource("Stacks").
@@ -108,11 +158,16 @@ var _ = Describe("Stacks informer", func() {
 							Error(),
 					).To(Succeed())
 				})
-				It("should have sent a Status_Ready", func() {
+				It("should have sent a Status_Changed", func() {
 					Eventually(func() []*generated.Message {
 						for _, message := range membershipClientMock.GetMessages() {
-							if message.GetStatusChanged() != nil && message.GetStatusChanged().Status == generated.StackStatus_Ready && message.GetStatusChanged().ClusterName == stack.Name {
-								return membershipClientMock.GetMessages()
+							if message.GetStatusChanged() != nil {
+								if _, ok := message.GetStatusChanged().GetStatuses().Fields["ready"]; ok {
+									isReady := message.GetStatusChanged().GetStatuses().Fields["ready"].GetBoolValue()
+									if isReady {
+										return membershipClientMock.GetMessages()
+									}
+								}
 							}
 						}
 						return nil
@@ -136,16 +191,33 @@ var _ = Describe("Stacks informer", func() {
 				Do(context.Background()).
 				Into(stack)).To(Succeed())
 
-			inMemoryStacksModules[stack.Name] = []string{}
-
 			startListener()
 
+			stack.Status.Ready = false
+			Expect(k8sClient.Put().
+				Resource("Stacks").
+				SubResource("status").
+				Name(stack.Name).
+				Body(stack).
+				Do(context.Background()).
+				Error()).To(Succeed())
 		})
-		It("should have sent a Status_Progressing", func() {
+		AfterEach(func() {
+			Expect(k8sClient.Delete().
+				Resource("Stacks").
+				Name(stack.Name).
+				Do(context.Background()).Error()).To(Succeed())
+		})
+		It("should have sent a Status_Changed", func() {
 			Eventually(func() []*generated.Message {
 				for _, message := range membershipClientMock.GetMessages() {
-					if message.GetStatusChanged() != nil && message.GetStatusChanged().Status == generated.StackStatus_Progressing {
-						return membershipClientMock.GetMessages()
+					if message.GetStatusChanged() != nil {
+						if _, ok := message.GetStatusChanged().GetStatuses().Fields["ready"]; ok {
+							isReady := message.GetStatusChanged().GetStatuses().Fields["ready"].GetBoolValue()
+							if !isReady {
+								return membershipClientMock.GetMessages()
+							}
+						}
 					}
 				}
 				return nil
@@ -163,12 +235,18 @@ var _ = Describe("Stacks informer", func() {
 						Do(context.Background()).
 						Error(),
 				).To(Succeed())
+
 			})
 			It("should have sent a Status_Ready", func() {
 				Eventually(func() []*generated.Message {
 					for _, message := range membershipClientMock.GetMessages() {
-						if message.GetStatusChanged() != nil && message.GetStatusChanged().Status == generated.StackStatus_Ready {
-							return membershipClientMock.GetMessages()
+						if message.GetStatusChanged() != nil {
+							if _, ok := message.GetStatusChanged().GetStatuses().Fields["ready"]; ok {
+								isReady := message.GetStatusChanged().GetStatuses().Fields["ready"].GetBoolValue()
+								if isReady {
+									return membershipClientMock.GetMessages()
+								}
+							}
 						}
 					}
 					return nil
@@ -190,7 +268,6 @@ var _ = Describe("Stacks informer", func() {
 				Into(stack)).To(Succeed())
 
 			startListener()
-			inMemoryStacksModules[stack.Name] = []string{}
 
 			Expect(k8sClient.Delete().
 				Resource("Stacks").
