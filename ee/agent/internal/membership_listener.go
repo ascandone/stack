@@ -14,6 +14,7 @@ import (
 	"github.com/formancehq/operator/api/formance.com/v1beta1"
 	"github.com/formancehq/stack/components/agent/internal/generated"
 	"github.com/formancehq/stack/libs/go-libs/collectionutils"
+	"github.com/formancehq/stack/libs/go-libs/logging"
 	sharedlogging "github.com/formancehq/stack/libs/go-libs/logging"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -146,7 +147,8 @@ func (c *membershipListener) generateMetadata(membershipStack *generated.Stack) 
 
 }
 func (c *membershipListener) syncModules(ctx context.Context, metadata map[string]any, stack *unstructured.Unstructured, membershipStack *generated.Stack) {
-
+	logger := logging.FromContext(ctx).WithField("stack", membershipStack.ClusterName)
+	logger.Infof("Syncing modules for stack %s", membershipStack.Modules)
 	for gvk, rtype := range scheme.Scheme.AllKnownTypes() {
 		object := reflect.New(rtype).Interface()
 		if _, ok := object.(v1beta1.Module); !ok {
@@ -157,7 +159,7 @@ func (c *membershipListener) syncModules(ctx context.Context, metadata map[strin
 			return m.Name
 		}), gvk.Kind) {
 			if err := c.deleteModule(ctx, gvk, stack.GetName()); err != nil {
-				sharedlogging.FromContext(ctx).Errorf("Unable to delete module %s cluster side: %s", gvk.Kind, err)
+				logger.Errorf("Unable to delete module %s cluster side: %s", gvk.Kind, err)
 			}
 			continue
 		}
@@ -174,7 +176,7 @@ func (c *membershipListener) syncModules(ctx context.Context, metadata map[strin
 					},
 				},
 			}); err != nil {
-				sharedlogging.FromContext(ctx).Errorf("Unable to create module Auth cluster side: %s", err)
+				logger.Errorf("Unable to create module Auth cluster side: %s", err)
 			}
 		case "Gateway":
 			if _, err := c.createOrUpdateStackDependency(ctx, stack.GetName(), stack.GetName(), stack, gvk, map[string]any{
@@ -186,13 +188,13 @@ func (c *membershipListener) syncModules(ctx context.Context, metadata map[strin
 					},
 				},
 			}); client.IgnoreNotFound(err) != nil {
-				sharedlogging.FromContext(ctx).Errorf("Unable to create module Stargate cluster side: %s", err)
+				logger.Errorf("Unable to create module Stargate cluster side: %s", err)
 			}
 		default:
 			if _, err := c.createOrUpdateStackDependency(ctx, stack.GetName(), stack.GetName(), stack, gvk, map[string]any{
 				"metadata": metadata,
 			}); err != nil {
-				sharedlogging.FromContext(ctx).Errorf("Unable to create module %s cluster side: %s", gvk.Kind, err)
+				logger.Errorf("Unable to create module %s cluster side: %s", gvk.Kind, err)
 			}
 		}
 

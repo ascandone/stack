@@ -91,7 +91,7 @@ func TestDeleteModule(t *testing.T) {
 				orders := NewMembershipClientMock()
 
 				membershipListener := NewMembershipListener(
-					k8sClient, ClientInfo{}, mapper, orders, nil)
+					k8sClient, ClientInfo{}, mapper, orders)
 
 				if tc.withLabels {
 					require.NoError(t, membershipListener.deleteModule(ctx, recon.GroupVersionKind(), stackName))
